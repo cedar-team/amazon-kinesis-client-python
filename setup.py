@@ -17,16 +17,17 @@ import sys
 
 import os
 import shutil
+import time
 from setuptools import Command
 from setuptools import setup
 from setuptools.command.install import install
 
 if sys.version_info[0] >= 3:
     # Python 3
-    from urllib.request import urlopen
+    from urllib.request import HTTPError, urlopen
 else:
     # Python 2
-    from urllib2 import urlopen
+    from urllib2 import HTTPError, urlopen
 
 #
 # This script modifies the basic setuptools by adding some functionality to the standard
@@ -121,6 +122,12 @@ REMOTE_MAVEN_PACKAGES = [
     ('commons-beanutils', 'commons-beanutils', '1.9.3'),
     ('commons-collections', 'commons-collections', '3.2.2')
 ]
+REQUEST_RETRIES_ON_THROTTLE = (
+    3  # number of times to retry downloading a jar if a request fails due to throttling
+)
+REQUEST_THROTTLE_SLEEP_SECS = (
+    1  # number of seconds to sleep between retries due to throttling
+)
 
 
 class MavenJarDownloader:
@@ -180,8 +187,18 @@ Which will download the required jars and rerun the install.
         Downloads a file at the url to the destination.
         """
         print('Attempting to retrieve remote jar {url}'.format(url=url))
+        retry_count = 0
+        response = None
         try:
-            response = urlopen(url)
+            while not response and retry_count < REQUEST_RETRIES_ON_THROTTLE:
+                try:
+                    response = urlopen(url)
+                except HTTPError as e:
+                    if e.code != 429:
+                        raise
+                    # Request has been throttled by maven.org. Sleep and retry.
+                    retry_count += 1
+                    time.sleep(REQUEST_THROTTLE_SLEEP_SECS)
             with open(dest, 'wb') as dest_file:
                 shutil.copyfileobj(response, dest_file)
             print('Saving {url} -> {dest}'.format(url=url, dest=dest))
